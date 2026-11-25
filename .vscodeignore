@@ -1,0 +1,9 @@
+.git/**
+.gitignore
+.vscodeignore
+src/**
+model/**
+scripts/**
+tsconfig.json
+vendor/*.tgz
+*.vsix
