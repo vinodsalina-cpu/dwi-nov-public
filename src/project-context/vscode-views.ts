@@ -12,6 +12,17 @@ import { containsPath, hasObviousSecret, isSecretLikePath, resolveWorkspaceRoots
 
 type Node = { recent?: boolean; label: string; description?: string; command?: string; projectId?: string; promptId?: string; contextValue?: string; collapsible?: vscode.TreeItemCollapsibleState };
 type ProjectEntry = { id: string; record: StoredRecord; value: ProjectValue; root?: WorkspaceRoot; available: boolean };
+type GitRepository = {
+	rootUri: vscode.Uri;
+	state: { onDidChange: vscode.Event<void>; HEAD?: { name?: string; commit?: string } };
+	status(): Promise<void>;
+};
+type GitApi = {
+	state: 'uninitialized' | 'initialized';
+	onDidChangeState: vscode.Event<'uninitialized' | 'initialized'>;
+	repositories: readonly GitRepository[];
+	onDidOpenRepository: vscode.Event<GitRepository>;
+};
 export type PendingContextReview = {
 	id: string;
 	projectId: string;
@@ -38,7 +49,8 @@ export class ProjectContextViews implements vscode.TreeDataProvider<Node>, vscod
 	private selectedProjectId?: string;
 	private readonly subscriptions: vscode.Disposable[] = [];
 	private readonly store: FileRecordStore;
-	private readonly gitApi?: { repositories: readonly { rootUri: vscode.Uri; state: { onDidChange: vscode.Event<void>; HEAD?: { name?: string; commit?: string } } }[]; onDidOpenRepository?: vscode.Event<{ rootUri: vscode.Uri; state: { onDidChange: vscode.Event<void>; HEAD?: { name?: string; commit?: string } } }> };
+	private gitApi?: GitApi;
+	private readonly gitReady: Promise<void>;
 	private refreshing?: Promise<void>;
 
 	constructor(private readonly context: vscode.ExtensionContext,
@@ -48,14 +60,13 @@ export class ProjectContextViews implements vscode.TreeDataProvider<Node>, vscod
 		void this.watchListings(storage).catch(error => {
 			if (!this.disposed) void vscode.window.showWarningMessage('Could not watch for prompt changes in other windows: ' + String(error));
 		});
-		this.gitApi = this.getGitApi();
+		this.gitReady = this.watchGit();
 		this.subscriptions.push(
 			vscode.workspace.onDidChangeWorkspaceFolders(this.invalidateListings),
 			vscode.workspace.onDidGrantWorkspaceTrust(this.invalidateListings),
 			vscode.workspace.onDidChangeConfiguration(event => { if (event.affectsConfiguration('dwiNov.projectContext')) void this.refresh(); }),
 			vscode.window.onDidChangeActiveTextEditor(() => { this.changed.fire(undefined); }),
 		);
-		this.watchGit();
 		void this.refresh();
 	}
 
@@ -84,21 +95,27 @@ export class ProjectContextViews implements vscode.TreeDataProvider<Node>, vscod
 		this.invalidateListings();
 	}
 
-	private getGitApi() {
+	private async watchGit(): Promise<void> {
+		const extension = vscode.extensions.getExtension<{ getAPI(version: 1): GitApi }>('vscode.git');
+		if (!extension) return;
 		try {
-			const extension = vscode.extensions.getExtension<{ getAPI(version: 1): unknown }>('vscode.git');
-			if (!extension) return undefined;
-			const api = extension.exports?.getAPI(1) as ProjectContextViews['gitApi'];
-			return api;
-		} catch { return undefined; }
-	}
-
-	private watchGit() {
-		const bind = (repository: { rootUri: vscode.Uri; state: { onDidChange: vscode.Event<void> } }) => {
+			this.gitApi = (await extension.activate()).getAPI(1);
+		} catch { return; } // Git may be disabled for this workspace.
+		if (this.disposed) return;
+		const api = this.gitApi;
+		const bind = (repository: GitRepository) => {
 			this.subscriptions.push(repository.state.onDidChange(() => { void this.refresh(); }));
 		};
-		for (const repository of this.gitApi?.repositories ?? []) bind(repository);
-		if (this.gitApi?.onDidOpenRepository) this.subscriptions.push(this.gitApi.onDidOpenRepository(bind));
+		for (const repository of api.repositories) bind(repository);
+		this.subscriptions.push(api.onDidOpenRepository(bind));
+		if (api.state === 'uninitialized') {
+			await new Promise<void>(resolve => {
+				const subscription = api.onDidChangeState(state => {
+					if (state === 'initialized') { subscription.dispose(); resolve(); }
+				});
+				this.subscriptions.push(subscription);
+			});
+		}
 	}
 
 	private service(root: WorkspaceRoot, validateContextSource?: (source: ContextSource) => Promise<boolean>): ProjectContextService {
@@ -704,9 +721,13 @@ export class ProjectContextViews implements vscode.TreeDataProvider<Node>, vscod
 	}
 
 	private async checkoutFingerprint(root: WorkspaceRoot): Promise<string | undefined> {
+		await this.gitReady;
 		const matching = this.gitApi?.repositories.find(repository => repository.rootUri.scheme === 'file' && containsPath(root.canonicalPath, repository.rootUri.fsPath));
 		if (!matching) return undefined;
 		const uri = matching.rootUri;
+		// A newly opened repository may still be populating its first HEAD snapshot.
+		if (!matching.state.HEAD) await matching.status();
+		if (!matching.state.HEAD) throw new Error('Git could not read the current checkout for project context.');
 		try {
 			const head = await readFile(resolve(uri.fsPath, '.git', 'HEAD'), 'utf8').catch(() => '');
 			const branch = String(matching.state.HEAD?.name ?? '') + '\0' + String(matching.state.HEAD?.commit ?? '');

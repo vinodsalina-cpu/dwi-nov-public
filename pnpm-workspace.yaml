@@ -1,4 +1,4 @@
-# vsce reads the installed production dependency tree when assembling the VSIX.
+# The native-runtime staging script reads the target binaries from this tree.
 nodeLinker: hoisted
 minimumReleaseAge: 1440
 minimumReleaseAgeStrict: true
@@ -7,6 +7,7 @@ blockExoticSubdeps: true
 strictDepBuilds: true
 allowBuilds:
   '@vscode/vsce-sign': false
+  esbuild: false
   onnxruntime-node: false
 overrides:
   'harper.js@3.3.0': 'file:vendor/harper.js-3.3.0.tgz'

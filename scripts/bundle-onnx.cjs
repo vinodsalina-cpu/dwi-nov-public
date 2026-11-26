@@ -2,6 +2,8 @@
 const { createHash } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
+const { pipeline } = require('node:stream/promises');
+const esbuild = require('esbuild');
 
 const root = path.resolve(__dirname, '..');
 const output = path.join(root, 'out');
@@ -26,7 +28,9 @@ const assets = {
 
 async function stageAsset(source, target, expected) {
   if (path.basename(source) === 'encoder-weights-00.bin') {
-    for (const index of [0, 1]) fs.appendFileSync(target, fs.readFileSync(source + '.' + index));
+    for (const index of [0, 1]) {
+      await pipeline(fs.createReadStream(source + '.' + index), fs.createWriteStream(target, { flags: index === 0 ? 'w' : 'a' }));
+    }
   } else if (['decoder.json', 'tokenizer.json'].includes(path.basename(source))) {
     // Latin-1 maps each byte one-to-one so only CRLF pairs can change.
     const bytes = fs.readFileSync(source, 'latin1');
@@ -66,8 +70,19 @@ async function main() {
       await stageAsset(source, path.join(temporary, name), digest);
     }
     const modules = path.join(temporary, 'node_modules');
-    stagePackage('onnxruntime-node', ['dist', path.join(binding, 'onnxruntime_binding.node'), path.join(binding, library)], modules);
-    stagePackage('onnxruntime-common', ['dist'], modules);
+    // Keep the upstream loader next to the native binary tree it resolves at run time.
+    stagePackage('onnxruntime-node', ['dist/index.js', 'dist/backend.js', 'dist/binding.js', 'dist/version.js',
+      path.join(binding, 'onnxruntime_binding.node'), path.join(binding, library)], modules);
+    stagePackage('onnxruntime-common', ['dist/cjs/package.json'], modules);
+    await esbuild.build({
+      entryPoints: [require.resolve('onnxruntime-common')],
+      outfile: path.join(modules, 'onnxruntime-common', 'dist', 'cjs', 'index.js'),
+      bundle: true,
+      platform: 'node',
+      format: 'cjs',
+      target: 'node22',
+      banner: { js: '/*! ONNX Runtime. Copyright (c) Microsoft Corporation. Licensed under the MIT License. */' },
+    });
     stagePackage('tokenizers', ['index.js', 'LICENSE', `tokenizers.${osTag}.node`], modules);
     // VS Code's Node loader resolves these packages relative to the bundle.
     const load = require('node:module').createRequire(path.join(temporary, 'decoder.json'));
