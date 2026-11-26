@@ -52,15 +52,18 @@ function createReviewTree({snapshot, wording, revisions, post, send, saveWording
 	}
 	$('input-read').ondblclick = beginWording;
 	$('input-read').onkeydown = e => { if (e.key === 'Enter') { e.preventDefault(); beginWording(); } };
-	$('done-wording').onclick = () => {
-		editingWording = false;
+	function checkSelectedWording() {
 		const s = snapshot();
 		if (s.clarificationEnabled && s.rewrite && s.clarification?.wording !== wording()) {
 			send('review-step-three-wording', {proposalId: s.rewrite.id, wording: wording()});
 		}
+	}
+	$('done-wording').onclick = () => {
+		editingWording = false;
+		checkSelectedWording();
 		refresh(); $('input-read').focus();
 	};
-	function versions(s) {
+	function versions(s, busy) {
 		const rows = [['Original input',s.input ?? s.text],['Reviewed input',s.rewrite.text],
 			...(s.rewrite.previousWordings ?? []).map(value => ['Earlier wording',value]),
 			['Rewrite',s.rewrite.proposed], ...revisions().map(value => ['Earlier wording',value]), ['Current wording',wording()]];
@@ -72,10 +75,11 @@ function createReviewTree({snapshot, wording, revisions, post, send, saveWording
 			const b = button('', () => {
 				if (s.phase !== 'proposal') return;
 				$('rewrite-text').value = value; saveWording(value);
+				checkSelectedWording();
 				showHistory = false; refresh(); $('input-history').focus();
 			});
 			b.append(element('strong',label), element('span',value));
-			b.disabled = value === wording() || s.phase !== 'proposal' || drafts.size > 0; holder.append(b);
+			b.disabled = busy || value === wording() || s.phase !== 'proposal' || s.clarification?.status === 'blocked' || drafts.size > 0; holder.append(b);
 		}
 	}
 	function highlights(message) {
@@ -172,23 +176,35 @@ function createReviewTree({snapshot, wording, revisions, post, send, saveWording
 			fieldSave = undefined; signature = undefined;
 		}
 	}
+	function mappingLockReason(s) {
+		const review = s.rewrite?.review, q = s.clarification;
+		if (review && review.wording !== wording()) return 'Select Done to check the edited wording.';
+		if (review?.status === 'checking') return 'Checking the wording…';
+		if (!q && review?.status === 'failed') return 'Retry the wording check to open Mappings.';
+		if (review?.groups.length) return 'Review the flagged wording in Input.';
+		if (q?.status === 'failed') return q.message || 'Retry the clarification check to open Mappings.';
+		if (q?.status === 'blocked') return 'Return to Step 1 to revise the request.';
+		if (q?.status === 'questions' && q.question?.blocking) return 'Resolve the blocking questions to open Mappings';
+		return 'Checking the request…';
+	}
 	function render(s, visible, busy) {
 		$('review-tree').hidden = !visible;
-		const q = s.clarification;
-		const sessionChanged = q?.session !== clarificationSession;
+		const currentWording = wording();
+		const q = s.clarification?.wording === currentWording ? s.clarification : undefined;
+		const sessionChanged = s.clarification?.session !== clarificationSession;
 		if (proposalId !== s.rewrite?.id || sessionChanged) {
 			proposalId = s.rewrite?.id; root = 'input'; openNode = undefined;
 			wantsMapping = editingWording = showHistory = false; conflictNotice = undefined; shownWording = signature = frameId = fieldSave = undefined; drafts.clear();
 		}
-		if (sessionChanged) { clarificationSession = q?.session; clarificationStatus = undefined; }
+		if (sessionChanged) { clarificationSession = s.clarification?.session; clarificationStatus = undefined; }
 		const mapped = inline(s);
-		const canMap = !s.clarificationEnabled || (!!mapped && q.wording === wording());
+		const canMap = !s.clarificationEnabled || !!q?.mapping;
 		const previousStatus = clarificationStatus;
 		if (q?.status !== previousStatus) {
 			clarificationStatus = q?.status;
 			if (q?.status === 'blocked') root = 'input';
 			else if (q?.status === 'ready') root = 'mappings';
-			else if (q?.status === 'questions') root = canMap ? 'mappings' : 'clarification';
+			else if (q?.status === 'questions') root = 'clarification';
 		}
 		if (root === 'mappings' && !canMap) root = q?.question ? 'clarification' : 'input';
 		const reviewing = q?.status === 'ready';
@@ -201,14 +217,15 @@ function createReviewTree({snapshot, wording, revisions, post, send, saveWording
 		$('tree-clarification').hidden = !showQuestions || root !== 'clarification';
 		$('mappings-node').disabled = !canMap;
 		$('mappings-node').classList.toggle('mapping-locked', !canMap);
-		$('mappings-node').title = canMap ? '' : 'Resolve the blocking questions to open Mappings';
+		$('mappings-node').title = canMap ? '' : mappingLockReason(s);
 		$('clarification-terminal').hidden = q?.status !== 'blocked';
 		$('clarification-review').hidden = !reviewing || !q.reached;
-		clarification.render(q, visible && showQuestions && root === 'clarification', busy, reviewing);
+		const wordingFailed = !s.clarification && s.rewrite?.review.status === 'failed' && s.rewrite.review.wording === currentWording;
+		clarification.render(q, visible && showQuestions && root === 'clarification', busy, reviewing, wordingFailed);
 		$('rewrite-text').hidden = !visible || !editingWording || root !== 'input';
 		if (!visible || (!s.rewrite && !q)) return;
 		if (mapped?.frame && frameId !== mapped.frame.id) { frameId = mapped.frame.id; drafts.clear(); signature = undefined; }
-		if (s.clarificationEnabled && !busy && (q?.status === 'resume' || (!q && s.phase === 'proposal' &&
+		if (s.clarificationEnabled && !busy && (q?.status === 'resume' || (!s.clarification && s.phase === 'proposal' && s.rewrite.review.wording === currentWording &&
 			s.rewrite.review.status === 'ready' && !s.rewrite.review.groups.length))) {
 			Promise.resolve().then(() => { if (snapshot() === s) send('resume-clarification'); });
 		}
@@ -223,7 +240,7 @@ function createReviewTree({snapshot, wording, revisions, post, send, saveWording
 		$('rewrite-input').disabled = !mutable || drafts.size > 0 || !wording().trim();
 		$('input-read').hidden = editingWording; $('done-wording').hidden = !editingWording;
 		$('input-versions').hidden = !showHistory; $('input-history').setAttribute('aria-expanded',String(showHistory));
-		if (showHistory && root === 'input' && s.rewrite) versions(s);
+		if (showHistory && root === 'input' && s.rewrite) versions(s, busy);
 		if (root === 'input' && !editingWording && shownWording !== wording()) {
 			shownWording = wording(); $('input-read').textContent = shownWording;
 			if (s.rewrite) post({type:'input-highlights',proposalId,token:++highlightToken,wording:shownWording});

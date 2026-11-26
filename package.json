@@ -77,6 +77,10 @@
         "title": "Switch to Scratch prompt"
       },
       {
+        "command": "dwiNov.newScratch",
+        "title": "Dwi Nov: New Scratch Pad"
+      },
+      {
         "command": "dwiNov.searchSettings",
         "title": "Search settings",
         "icon": "$(search)"
@@ -241,7 +245,7 @@
   "scripts": {
     "preinstall": "node scripts/check-package-manager.cjs",
     "compile": "tsc -p ./",
-    "package": "pnpm run compile && node scripts/bundle-onnx.cjs && node scripts/package.cjs"
+    "package": "pnpm run compile && node scripts/package.cjs"
   },
   "devDependencies": {
     "esbuild": "0.28.2",

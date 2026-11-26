@@ -1,6 +1,6 @@
 # Dwi Nov
 
-Dwi Nov helps you draft and review prompts in desktop Visual Studio Code. Use Scratch for a one-off prompt or save a project prompt and return to it through Recents. Grammar checks and model inference run locally.
+Dwi Nov helps you draft and review prompts in desktop Visual Studio Code. Start a Scratch pad for an independent prompt, or create a project prompt to work with approved project context. Grammar checks and model inference run locally.
 
 ## Install on Windows x64
 
@@ -8,7 +8,7 @@ Download the Windows x64 VSIX from [Releases](https://github.com/vinodsalina-cpu
 
 ## Try the review flow
 
-Open **Scratch**, enter a draft, and choose **Review**. Review the suggested edits and confirm the wording you want to use. To keep a draft between sessions, initialize a project and create a project prompt. See the [demo presentation](demo/) for a walkthrough.
+On Home, choose **New Scratch Pad**, enter a draft, and choose **Review**. Each pad keeps its own edits and variants. Choose **Open Scratch** to resume, or use **Recents** to continue another unfinished pad. To use project context, initialize a project and create a project prompt. See the [demo presentation](demo/) for a walkthrough.
 
 ## Build from source
 

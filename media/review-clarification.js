@@ -147,9 +147,14 @@ function createClarificationView({snapshot, send, post, loadDraft, storeDraft}) 
 		else { finalSkip = true; $('clarification-status').textContent = 'Skipped'; $('clarification-next').focus(); }
 	};
 	$('clarification-back').onclick = () => send('navigate-clarification', {questionId, position: current().position - 1});
-	$('clarification-retry').onclick = () => send('resume-clarification');
+	$('clarification-retry').onclick = () => {
+		const s = snapshot();
+		if (!s.clarification && s.rewrite?.review.status === 'failed') {
+			send('review-step-three-wording', {proposalId: s.rewrite.id, wording: s.rewrite.review.wording});
+		} else send('resume-clarification');
+	};
 
-	function render(state, visible, pending, review) {
+	function render(state, visible, pending, review, wordingFailed) {
 		const {question} = state ?? {};
 		const checking = state?.status === 'checking' || state?.status === 'resume';
 		busy = pending || checking || !question || state?.status === 'failed';
@@ -172,9 +177,11 @@ function createClarificationView({snapshot, send, post, loadDraft, storeDraft}) 
 		$('clarification-next').disabled = !!busy;
 		$('clarification-fields').disabled = !!busy;
 		$('clarification-next').textContent = state?.position === 6 ? 'Confirm' : 'Next';
-		$('clarification-status').textContent = checking ? 'Checking request…' : state?.status === 'failed' ? state.message ?? '' :
+		$('clarification-status').textContent = checking ? 'Checking request…' : state?.status === 'failed' ? state.message || 'The clarification check could not finish.' :
 			visible && state?.response?.skip ? 'Skipped' : '';
-		$('clarification-retry').hidden = state?.status !== 'failed';
+		$('clarification-retry').hidden = state?.status !== 'failed' && !wordingFailed;
+		$('clarification-retry').textContent = wordingFailed ? 'Retry wording check' : 'Retry clarification check';
+		$('clarification-retry').disabled = !!pending;
 		if (state?.alert !== acknowledgedAlert) {
 			acknowledgedAlert = state?.alert;
 			$('clarification-alert').textContent = state?.alert ?? '';

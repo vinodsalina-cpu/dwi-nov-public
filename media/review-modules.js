@@ -114,7 +114,7 @@ function createReviewModules(vscode, getInfo, focusDraft, closeTools) {
 		if (page === 'recents') send('recents-state');
 		else send('panel-page', {page: 'recents'});
 	});
-	for (const [button, action] of [['home-open-last', 'last'], ['home-new-prompt', 'new'], ['home-scratch', 'scratch'], ['home-recents', 'recents']]) {
+	for (const [button, action] of [['home-open-last', 'last'], ['home-new-prompt', 'new'], ['home-new-scratch', 'new-scratch'], ['home-scratch', 'scratch'], ['home-recents', 'recents']]) {
 		$(button).addEventListener('click', () => {
 			homeStatus.textContent = '';
 			send('home-action', {action, ...(action === 'last' && displayedLastPrompt &&

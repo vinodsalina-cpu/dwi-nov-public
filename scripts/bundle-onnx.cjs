@@ -1,5 +1,5 @@
 // Stage only the v13 graphs and CPU packages required by this VSIX target.
-const { createHash } = require('node:crypto');
+const { createHash, randomUUID } = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pipeline } = require('node:stream/promises');
@@ -7,7 +7,7 @@ const esbuild = require('esbuild');
 
 const root = path.resolve(__dirname, '..');
 const output = path.join(root, 'out');
-const destination = path.join(output, 'modernbert');
+const cache = path.join(output, '.modernbert-cache');
 const graphs = path.join(root, 'model');
 const assets = {
   'encoder.onnx': 'c2e60f521139b83b330ce8a909c9a75f5b44b3031cf9ae2f5418fd332b006f95',
@@ -26,74 +26,123 @@ const assets = {
   'tokenizer.json': '6c8aaa9a542084f2457eab775d4eeb51f92a70c0fd9de28d5edb0ddec3c08d30',
 };
 
-async function stageAsset(source, target, expected) {
-  if (path.basename(source) === 'encoder-weights-00.bin') {
-    for (const index of [0, 1]) {
-      await pipeline(fs.createReadStream(source + '.' + index), fs.createWriteStream(target, { flags: index === 0 ? 'w' : 'a' }));
-    }
-  } else if (['decoder.json', 'tokenizer.json'].includes(path.basename(source))) {
-    // Latin-1 maps each byte one-to-one so only CRLF pairs can change.
-    const bytes = fs.readFileSync(source, 'latin1');
-    fs.writeFileSync(target, bytes.replace(/\r\n/g, '\n'), 'latin1');
+async function* content(file) {
+  if (file.bytes) {
+    yield file.bytes;
   } else {
-    fs.copyFileSync(source, target);
-  }
-  const digest = createHash('sha256');
-  for await (const bytes of fs.createReadStream(target)) digest.update(bytes);
-  if (digest.digest('hex') !== expected) throw new Error('Unexpected artifact digest for ' + path.basename(source));
-}
-
-function stagePackage(rootName, files, modules) {
-  const source = path.join(root, 'node_modules', rootName);
-  const target = path.join(modules, rootName);
-  fs.mkdirSync(target, { recursive: true });
-  for (const file of ['package.json', ...files]) {
-    fs.cpSync(path.join(source, file), path.join(target, file), { recursive: true });
+    for (const source of file.sources) yield* fs.createReadStream(source);
   }
 }
 
-async function main() {
+async function checksum(chunks) {
+  const hash = createHash('sha256');
+  for await (const chunk of chunks) hash.update(chunk);
+  return hash.digest('hex');
+}
+
+async function bundleFiles() {
   const { platform, arch } = process;
-  const osTag = {
-    darwin: `darwin-${arch}`, linux: `linux-${arch}-gnu`, win32: `win32-${arch}-msvc`,
-  }[platform];
-  const library = {
-    darwin: 'libonnxruntime.1.24.3.dylib', linux: 'libonnxruntime.so.1', win32: 'onnxruntime.dll',
-  }[platform];
+  const osTag = { darwin: `darwin-${arch}`, linux: `linux-${arch}-gnu`, win32: `win32-${arch}-msvc` }[platform];
+  const library = { darwin: 'libonnxruntime.1.24.3.dylib', linux: 'libonnxruntime.so.1', win32: 'onnxruntime.dll' }[platform];
   if (!osTag || !library || !['x64', 'arm64'].includes(arch)) throw new Error('Unsupported ONNX build target.');
-  const binding = path.join('bin', 'napi-v6', platform, arch);
-  fs.mkdirSync(output, { recursive: true });
-  const temporary = fs.mkdtempSync(path.join(output, 'modernbert-staging-'));
-  try {
-    for (const [name, digest] of Object.entries(assets)) {
-      const source = path.join(graphs, name);
-      await stageAsset(source, path.join(temporary, name), digest);
+
+  const files = Object.entries(assets).map(([name, pin]) => {
+    const source = path.join(graphs, name);
+    if (name === 'encoder-weights-00.bin') return { name, pin, sources: [source + '.0', source + '.1'] };
+    if (name.endsWith('.json')) {
+      // Latin-1 maps bytes one-to-one, so only CRLF pairs can change.
+      return { name, pin, bytes: Buffer.from(fs.readFileSync(source, 'latin1').replace(/\r\n/g, '\n'), 'latin1') };
     }
-    const modules = path.join(temporary, 'node_modules');
-    // Keep the upstream loader next to the native binary tree it resolves at run time.
-    stagePackage('onnxruntime-node', ['dist/index.js', 'dist/backend.js', 'dist/binding.js', 'dist/version.js',
-      path.join(binding, 'onnxruntime_binding.node'), path.join(binding, library)], modules);
-    stagePackage('onnxruntime-common', ['dist/cjs/package.json'], modules);
-    await esbuild.build({
-      entryPoints: [require.resolve('onnxruntime-common')],
-      outfile: path.join(modules, 'onnxruntime-common', 'dist', 'cjs', 'index.js'),
-      bundle: true,
-      platform: 'node',
-      format: 'cjs',
-      target: 'node22',
-      banner: { js: '/*! ONNX Runtime. Copyright (c) Microsoft Corporation. Licensed under the MIT License. */' },
-    });
-    stagePackage('tokenizers', ['index.js', 'LICENSE', `tokenizers.${osTag}.node`], modules);
-    // VS Code's Node loader resolves these packages relative to the bundle.
-    const load = require('node:module').createRequire(path.join(temporary, 'decoder.json'));
-    load('onnxruntime-node');
-    load('tokenizers');
-    fs.rmSync(destination, { recursive: true, force: true });
-    fs.renameSync(temporary, destination);
-    console.log(`Packaged ModernBERT v13 ONNX for ${platform}/${arch}`);
-  } finally {
-    fs.rmSync(temporary, { recursive: true, force: true });
+    return { name, pin, sources: [source] };
+  });
+  const binding = `bin/napi-v6/${platform}/${arch}`;
+  const packages = {
+    'onnxruntime-node': ['dist/index.js', 'dist/backend.js', 'dist/binding.js', 'dist/version.js',
+      binding + '/onnxruntime_binding.node', binding + '/' + library],
+    'onnxruntime-common': ['dist/cjs/package.json'],
+    tokenizers: ['index.js', 'LICENSE', `tokenizers.${osTag}.node`],
+  };
+  for (const [pkg, paths] of Object.entries(packages)) {
+    for (const relative of ['package.json', ...paths]) {
+      const name = `node_modules/${pkg}/${relative}`;
+      const source = path.join(root, name);
+      if (!fs.statSync(source).size) throw new Error('Empty dependency file: ' + name);
+      files.push({ name, sources: [source] });
+    }
   }
+  const common = await esbuild.build({
+    absWorkingDir: root,
+    entryPoints: [require.resolve('onnxruntime-common')],
+    bundle: true, platform: 'node', format: 'cjs', target: 'node22', write: false,
+    banner: { js: '/*! ONNX Runtime. Copyright (c) Microsoft Corporation. Licensed under the MIT License. */' },
+  });
+  files.push({ name: 'node_modules/onnxruntime-common/dist/cjs/index.js', bytes: common.outputFiles[0].contents });
+  for (const file of files) {
+    file.digest = await checksum(content(file));
+    if (file.pin && file.pin !== file.digest) throw new Error('Unexpected artifact digest for ' + file.name);
+  }
+  return files;
 }
 
-main().catch(error => { console.error(error.message); process.exitCode = 1; });
+async function verify(directory, files) {
+  if (!fs.lstatSync(directory).isDirectory()) throw new Error('Invalid ModernBERT cache directory: ' + directory);
+  const expected = new Map(files.map(file => [file.name, file.digest]));
+  async function visit(relative) {
+    for (const entry of await fs.promises.readdir(path.join(directory, relative), { withFileTypes: true })) {
+      const name = path.posix.join(relative, entry.name);
+      if (entry.isDirectory()) {
+        await visit(name);
+      } else {
+        if (!entry.isFile() || !expected.has(name) ||
+            await checksum(fs.createReadStream(path.join(directory, name))) !== expected.get(name)) {
+          throw new Error('Unexpected file or digest in ModernBERT cache: ' + name);
+        }
+        expected.delete(name);
+      }
+    }
+  }
+  await visit('');
+  if (expected.size) throw new Error('Missing file in ModernBERT cache: ' + expected.keys().next().value);
+}
+
+async function prepareBundle() {
+  const files = await bundleFiles();
+  const key = createHash('sha256').update(JSON.stringify([process.platform, process.arch,
+    files.map(({ name, digest }) => [name, digest])])).digest('hex');
+  const directory = path.join(cache, key);
+  fs.mkdirSync(cache, { recursive: true });
+  if (!fs.existsSync(directory)) {
+    const temporary = fs.mkdtempSync(path.join(cache, '.building-'));
+    try {
+      for (const file of files) {
+        const target = path.join(temporary, file.name);
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        await pipeline(content(file), fs.createWriteStream(target, { flags: 'wx' }));
+      }
+      await verify(temporary, files);
+      try { fs.renameSync(temporary, directory); }
+      catch (error) {
+        // Another build can finish first. Its published directory must validate independently.
+        if (!fs.existsSync(directory)) throw error;
+        await verify(directory, files);
+      }
+    } finally { fs.rmSync(temporary, { recursive: true, force: true }); }
+  } else {
+    await verify(directory, files);
+  }
+
+  const pointer = path.join(output, 'modernbert-cache-key');
+  const current = fs.existsSync(pointer) ? fs.readFileSync(pointer, 'utf8').trim() : undefined;
+  if (current !== key) {
+    const next = pointer + '-' + randomUUID();
+    try {
+      fs.writeFileSync(next, key + '\n', { flag: 'wx' });
+      fs.renameSync(next, pointer);
+    } finally { fs.rmSync(next, { force: true }); }
+  }
+  console.log(`Verified ModernBERT v13 ONNX for ${process.platform}/${process.arch} (${key})`);
+  return { directory };
+}
+
+module.exports = { prepareBundle };
+if (require.main === module) prepareBundle().catch(error => { console.error(error.message); process.exitCode = 1; });

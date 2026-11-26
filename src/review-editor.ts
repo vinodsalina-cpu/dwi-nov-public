@@ -22,7 +22,7 @@ function icon(name: string): string {
 }
 
 export type PanelPage = 'home' | 'recents' | 'draft' | 'logs' | SettingsPage;
-type HomeAction = 'last' | 'new' | 'scratch' | 'recents';
+type HomeAction = 'last' | 'new' | 'scratch' | 'new-scratch' | 'recents';
 type StagedInput = {flow: ReviewWorkflow; id: number; branch: number; base: string; dispose: () => void};
 type PanelServices = {
 	logs: ReviewLogs;
@@ -84,6 +84,16 @@ export class ReviewEditor implements vscode.WebviewViewProvider {
 		this.inTree = false;
 		if (this.clients.size) { this.treeLease?.(); this.treeLease = undefined; }
 	}
+	private draftSession = '';
+	private readonly reloadViews = new Set<() => void>();
+	setDraftSession(id: string) {
+		if (this.draftSession === id) return;
+		this.draftSession = id;
+		this.scratch = undefined;
+		this.parkedInput?.dispose();
+		this.parkedInput = undefined;
+		for (const reload of this.reloadViews) reload();
+	}
 	private readonly clients = new Set<(message: unknown) => void>();
 	showPage(page: PanelPage, target: {id?: string; key?: SettingKey; resume?: boolean} = {}) {
 		if (page === 'logs' && !this.panels?.settings().enabled) return;
@@ -97,6 +107,15 @@ export class ReviewEditor implements vscode.WebviewViewProvider {
 	}
 
 	resolveWebviewView(view: vscode.WebviewView): void {
+		let detach = this.bindView(view);
+		const reload = () => { detach(false); detach = this.bindView(view); };
+		this.reloadViews.add(reload);
+		view.onDidDispose(() => { this.reloadViews.delete(reload); detach(this.inTree); });
+	}
+
+	private bindView(view: vscode.WebviewView) {
+		const generation = randomBytes(16).toString('hex');
+		const session = this.draftSession;
 		const { webview } = view;
 		const { workflow } = this;
 		const media = vscode.Uri.joinPath(this.extensionUri, 'media');
@@ -121,7 +140,7 @@ export class ReviewEditor implements vscode.WebviewViewProvider {
 		};
 		const post = (message: unknown) => {
 			// The webview may have been hidden after the transition committed. Sync restores it.
-			if (!disposed) void Promise.resolve(webview.postMessage(message)).catch(() => {});
+			if (!disposed) void Promise.resolve(webview.postMessage(Object.assign({viewGeneration: generation}, message))).catch(() => {});
 		};
 		this.clients.add(post);
 		const showListing = async (page: 'home' | 'recents', background = false) => {
@@ -161,14 +180,15 @@ export class ReviewEditor implements vscode.WebviewViewProvider {
 				? reviewedSections(mapping, state.rewrite?.checkedWording ?? '') : undefined};
 		};
 		const unsubscribe = workflow.subscribe(() => {
-			if (!handling) post({ type: 'snapshot', ...sidebarSnapshot() });
+			// Session identity follows a successful checkpoint restore in the same host turn.
+			if (!handling) queueMicrotask(() => { if (!disposed) post({ type: 'snapshot', ...sidebarSnapshot() }); });
 		});
 		if (staged) {
 			const old = staged.dispose; staged.dispose = staged.flow.subscribe(postInput); old();
 		}
 		if (!this.inTree) this.resumePanel();
 		const subscription = webview.onDidReceiveMessage(async message => {
-			if (disposed || !message || typeof message !== 'object') return;
+			if (disposed || !message || typeof message !== 'object' || message.viewGeneration !== generation) return;
 			const panels = this.panels;
 			if (panels) {
 				try {
@@ -189,7 +209,7 @@ export class ReviewEditor implements vscode.WebviewViewProvider {
 							return;
 						case 'home-action':
 							if (this.route.page === 'home' && !homeActionPending &&
-								(message.action === 'last' || message.action === 'new' || message.action === 'scratch' || message.action === 'recents')) {
+								(message.action === 'last' || message.action === 'new' || message.action === 'scratch' || message.action === 'new-scratch' || message.action === 'recents')) {
 								if (message.action === 'last' && (!homePrompt || message.projectId !== homePrompt.projectId || message.promptId !== homePrompt.promptId)) {
 									await showListing('home');
 									return;
@@ -372,16 +392,6 @@ export class ReviewEditor implements vscode.WebviewViewProvider {
 				handling = false;
 			}
 		});
-		view.onDidDispose(() => {
-			disposed = true;
-			this.clients.delete(post);
-			previewGeneration++;
-			if (this.inTree && staged) { this.parkedInput?.dispose(); this.parkedInput = staged; }
-			else staged?.dispose();
-			listingsSubscription?.dispose();
-			subscription.dispose();
-			unsubscribe();
-		});
 		const nonce = randomBytes(24).toString('base64');
 		const script = webview.asWebviewUri(vscode.Uri.joinPath(media, 'review-editor.js'));
 		const moduleScript = webview.asWebviewUri(vscode.Uri.joinPath(media, 'review-modules.js'));
@@ -406,7 +416,7 @@ export class ReviewEditor implements vscode.WebviewViewProvider {
 	<link rel="stylesheet" href="${stylesheet}">
 	<link rel="stylesheet" href="${recentsStyles}">
 </head>
-<body>
+<body data-draft-session="${encodeURIComponent(session)}" data-view-generation="${generation}">
 	<aside class="panel-rail" aria-label="Modules">
 		<button id="focus-home" type="button" aria-label="Home" title="Home"${this.route.page === 'home' ? ' aria-current="page"' : ''}>${glyph('M2 7l6-5 6 5v7H9.5v-4h-3v4H2z')}</button>
 		<button id="focus-recents" type="button" aria-label="Recents" title="Recents"${this.route.page === 'recents' ? ' aria-current="page"' : ''}>${icon('history')}</button>
@@ -428,6 +438,7 @@ export class ReviewEditor implements vscode.WebviewViewProvider {
 			</section>
 			<div class="home-actions">
 				<button class="home-action" id="home-new-prompt" type="button" disabled>${glyph('M8 3v10M3 8h10')}<span id="home-new-label">New project prompt</span></button>
+				<button class="home-action" id="home-new-scratch" type="button">${icon('add')} New Scratch Pad</button>
 				<button class="home-action" id="home-scratch" type="button">${icon('edit')} Open Scratch</button>
 			</div>
 			<button class="home-link" id="home-recents" type="button" hidden>View recent prompts ${icon('chevron-right')}</button>
@@ -619,5 +630,15 @@ export class ReviewEditor implements vscode.WebviewViewProvider {
 	<script nonce="${nonce}" src="${script}"></script>
 </body>
 </html>`;
+		return (park: boolean) => {
+			disposed = true;
+			this.clients.delete(post);
+			previewGeneration++;
+			if (park && staged) { this.parkedInput?.dispose(); this.parkedInput = staged; }
+			else staged?.dispose();
+			listingsSubscription?.dispose();
+			subscription.dispose();
+			unsubscribe();
+		};
 	}
 }

@@ -8,23 +8,42 @@ const word = /[\p{L}\p{M}\p{N}_]/u;
 const guard = /\b(except(?: for)?|excluding|unless|only if|if|when|until|provided that|before|after)\b/gi;
 const vague = /\b(appropriate|applicable|ready|suitable|safe|sufficiently|adequately|enough|needed|necessary|required|requested|permitted|approved|stable|acceptable|relevant)\b/i;
 const placeholder = /\b(unspecified|unknown|undecided|unidentified|TBD)\b/i;
+const explicitName = /^(?:["'`]|[A-Z])|[a-z][A-Z]|[\w.-][/\\.][\w-]/u;
 
 function missingDecision(question: ContextQuestion, phrase: string, before: string, after: string, rest: string) {
 	const text = phrase.trim();
 	if (!text || /^(?:\s*[:=]|\s+(?:named|called|located (?:at|in)))\s*\S/i.test(after)) return false;
+	const component = question.question === 'Which file or component is the target?' &&
+		/^(?:(?:the|an?)\s+)?(?:appropriate|affected|relevant|intended|selected)\s+(?:(backend|frontend)\s+)?(?:service|component|file|module)$/i.exec(text);
 	// A following definition can answer a candidate in an earlier sentence.
 	const noun = text.match(/[a-z]+$/i)?.[0];
 	if (noun) {
-		const definition = new RegExp('(?:^|[.!?\\n])\\s*(?:the\\s+)?(?:affected\\s+)?' + noun +
+		const layer = component && component[1] ? `(?:${component[1]}\\s+)?` : '';
+		const qualifier = component ? '(?:(?:appropriate|affected|relevant|intended|selected)\\s+)?' : '(?:affected\\s+)?';
+		const subject = '(?:^|[.!?\\n])\\s*(?:the\\s+)?' + qualifier + layer + noun;
+		const definition = new RegExp(subject +
 			'\\s*(?::|=|is\\s+(?:named\\s+|called\\s+|(?=[`"\']|[\\w/-]+[/.][\\w/-]+)))\\s*(?!unknown\\b|unspecified\\b|TBD\\b)\\S', 'i');
 		if (definition.test(rest) || definition.test(before)) return false;
+		if (component) {
+			const assigned = new RegExp(subject + '\\s+is\\s+(\\S+)', 'gi');
+			for (const section of [before, rest]) {
+				for (const [, value] of section.matchAll(assigned)) {
+					if (explicitName.test(value) && !placeholder.test(value)) return false;
+				}
+			}
+		}
 	}
 	if (placeholder.test(text)) return true;
 	switch (question.question) {
-		case 'Which file or component is the target?':
-			return /^(?:(?:the\s+)?(?:affected|relevant|intended|selected)\s+\S+|(?:this|that)(?:\s+\S+)?|it|them)$/i.test(text)
-				&& !/^\s*(?:\(|\bin\s+\S*[/.])/i.test(after)
+		case 'Which file or component is the target?': {
+			// A tier such as “backend” narrows the kind of service but does not name it.
+			// A directly attached identifier, path or quoted name does supply the target.
+			const label = after.match(/^\s*[,–—]?\s*([^\s,;]+)/u)?.[1];
+			if (component && label && explicitName.test(label)) return false;
+			return (component || /^(?:(?:the\s+)?(?:affected|relevant|intended|selected)\s+\S+|(?:this|that)(?:\s+\S+)?|it|them)$/i.test(text))
+				&& !/^\s*(?:\(|\b(?:in|at|under)\s+\S*[/\\.][\w-])/i.test(after)
 				&& !(/^(it|them|this|that)$/i.test(text) && /(?:\x60[^\x60]+\x60|\b[\w./-]+\.\w+)\s*[.!?]\s+\w+\s*$/i.test(before));
+		}
 		case 'What does this reference refer to?':
 			return /\b(this|that|previous|earlier|former|mentioned|discussed)\b/i.test(text);
 		case 'Which condition must be satisfied?':

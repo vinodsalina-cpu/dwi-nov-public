@@ -1,5 +1,8 @@
 (() => {
-	const vscode = acquireVsCodeApi();
+	const api = acquireVsCodeApi();
+	const generation = document.body.dataset.viewGeneration;
+	const session = document.body.dataset.draftSession;
+	const vscode = {postMessage: message => api.postMessage({...message, viewGeneration: generation})};
 	const $ = id => document.getElementById(id);
 	const editor = $('request');
 	const source = $('source');
@@ -19,7 +22,22 @@
 	let snapshot;
 	let pending;
 	let ackTimer;
-	let saved = vscode.getState();
+	const persisted = api.getState();
+	const otherSessions = {...persisted?.otherSessions};
+	let saved;
+	if (persisted?.session === session || (!session && !persisted?.session)) {
+		saved = persisted;
+	} else {
+		if (persisted?.session) {
+			const {otherSessions: previous, ...oldDraft} = persisted;
+			if (oldDraft.draft !== undefined || oldDraft.wordingDrafts?.length || oldDraft.recoveredEdits?.length ||
+				Object.keys(oldDraft.inputVersions ?? {}).length || Object.keys(oldDraft.clarificationDrafts ?? {}).length) {
+				otherSessions[persisted.session] = oldDraft;
+			}
+		}
+		saved = otherSessions[session];
+		delete otherSessions[session];
+	}
 	let requestId = Number.isSafeInteger(saved?.requestId) ? saved.requestId : 0;
 	let recoveredDraft = typeof saved?.draft === 'string' ? saved.draft : undefined;
 	let wordingDrafts = Array.isArray(saved?.wordingDrafts) ? saved.wordingDrafts.filter(copy =>
@@ -119,7 +137,7 @@
 			saved?.wordingDrafts === wording && saved?.recoveredEdits === recoveredEdits && saved?.clarificationDrafts === clarificationDrafts) return;
 		saved = {requestId, draft, draftBase, draftBranch, stepView: {branch: viewedBranch, step: pageStep}, inputVersions, wordingDrafts: wording,
 			recoveredEdits, clarificationDrafts};
-		vscode.setState(saved);
+		api.setState({...saved, session, otherSessions});
 	}
 	function sameProposal(copy, proposal) {
 		return proposal && copy.id === proposal.id && copy.source === proposal.text && copy.proposed === proposal.proposed;
@@ -649,8 +667,11 @@
 		archiveEdit = false;
 		retriedEdit = false;
 	}
+	let receivedPanel = false;
 	window.addEventListener('message', ({data}) => {
-		if (data?.panel) modules.initialize(data.panel);
+		if (data?.viewGeneration !== generation) return;
+		const focusDraft = !receivedPanel && data.panel?.page === 'draft';
+		if (data?.panel) { modules.initialize(data.panel); receivedPanel = true; }
 		if (modules.receive(data)) return;
 		if (data?.type === 'action-list' || data?.type === 'wording-timeline') {
 			if (actionMenu?.token !== data.token || !menuIsCurrent()) return;
@@ -752,6 +773,7 @@
 		flushDraft();
 		rememberPendingDraft();
 		render();
+		if (focusDraft && modules.isDraft()) visibleEditor()?.focus();
 		if (data.status === 'accepted' && ['restore', 'open-branch', 'open-copy'].includes(action?.type)) {
 			visibleEditor()?.focus();
 		}

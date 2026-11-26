@@ -1,5 +1,8 @@
 import * as vscode from 'vscode';
 import { join } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { SCRATCH_SCOPE, ScratchPads } from './project-context/scratch-pads';
 import { ModernBertWorker } from './core/modernbert-rewrite';
 import { mapWithModernBert } from './core/prompt-mapping';
 import { ReviewWorkflow, localServices, type ReviewServices, type ReviewCommand } from './core/review-workflow';
@@ -7,19 +10,31 @@ import { ReviewLogs } from './core/review-logs';
 import { ReviewEditor, type PanelPage } from './review-editor';
 import { openContextSources } from './context-source-menu';
 import { readPanelSettings, searchableSettings, settingsGroups, settingsSections, type SettingKey } from './review-settings';
-import type { ProjectContextViews } from './project-context/vscode-views';
+import type { HomeState, ProjectContextViews } from './project-context/vscode-views';
 import { isPromptValue } from './project-context/contracts';
 import { summarisePrompt, type PromptRef } from './project-context/prompt-recents';
 
 type PromptBinding = { projectId: string; promptId: string; revision: number };
 type PersistedBinding = { projectId: string; promptId: string };
+const LAST_SCRATCH_KEY = 'dwi.lastScratchPad';
+const newPad = (): PromptBinding => ({projectId: SCRATCH_SCOPE, promptId: randomUUID(), revision: 0});
 const BINDING_KEY = 'dwi.projectContext.activePrompt';
 let model: ModernBertWorker | undefined;
 let projectContext: vscode.Disposable | undefined;
 let closeReview: (() => Promise<void>) | undefined;
 
 export function activate(context: vscode.ExtensionContext) {
-	const bundle = join(context.extensionUri.fsPath, 'out', 'modernbert');
+	const output = join(context.extensionUri.fsPath, 'out');
+	let bundle = join(output, 'modernbert');
+	if (context.extensionMode === vscode.ExtensionMode.Development) {
+		try {
+			const key = readFileSync(join(output, 'modernbert-cache-key'), 'utf8').trim();
+			if (!/^[0-9a-f]{64}$/u.test(key)) throw new Error('Invalid ModernBERT bundle cache key.');
+			bundle = join(output, '.modernbert-cache', key);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+		}
+	}
 	const worker = model = new ModernBertWorker({node: process.execPath, workingDirectory: bundle,
 		script: join(context.extensionUri.fsPath, 'out', 'core', 'modernbert', 'worker.js')});
 	let modelTail: Promise<void> = Promise.resolve();
@@ -45,6 +60,12 @@ export function activateReview(context: vscode.ExtensionContext, services: Revie
 	let prefs = readPanelSettings(configuration());
 	const logs = new ReviewLogs(context.globalStorageUri.fsPath, () => prefs.source === 'markov', message => { void vscode.window.showWarningMessage(message); });
 	let promptBinding: PromptBinding | undefined;
+	const pads = new ScratchPads(join(context.globalStorageUri.fsPath, 'scratch-pads'));
+	let scratch = newPad();
+	const owner = () => promptBinding ?? scratch;
+	const listings = new vscode.EventEmitter<void>();
+	const projectChanges = projectViews?.onDidChangeListings(() => listings.fire());
+	const sessionKey = () => JSON.stringify([owner().projectId, owner().promptId]);
 	const workflow = new ReviewWorkflow(services.stepThree && projectViews ? {...services, stepThree: {
 		...services.stepThree,
 		async context(wording, signal) {
@@ -54,25 +75,30 @@ export function activateReview(context: vscode.ExtensionContext, services: Revie
 			catch { signal.throwIfAborted(); return {relevance: 'unknown', references: []}; }
 		}
 	}} : services, logs.capture);
-	let hydrating = false, actionGeneration = 0, lastSaved = '';
+	let hydrating = false, actionGeneration = 0, lastSaved = JSON.stringify(workflow.exportCheckpoint());
 	let saveTimer: NodeJS.Timeout | undefined, saveTail: Promise<void> = Promise.resolve(), closing: Promise<void> | undefined;
 	let queuedSave: {binding: PromptBinding; serialized: string; task: Promise<void>} | undefined;
 	const safe = async <T,>(label: string, operation: () => Promise<T>): Promise<T | undefined> => {
 		try { return await operation(); } catch (error) { void vscode.window.showErrorMessage(`${label}: ${String(error)}`); return undefined; }
 	};
-	const changed = () => { if (!hydrating && promptBinding) { clearTimeout(saveTimer); saveTimer = setTimeout(() => { void safe('Could not save prompt', saveNow); }, 500); } };
+	const changed = () => { if (!hydrating) { clearTimeout(saveTimer); saveTimer = setTimeout(() => { void safe('Could not save prompt', saveNow); }, 500); } };
 	const saveNow = async () => {
-		if (!promptBinding) return;
-		const binding = promptBinding, checkpoint = workflow.exportCheckpoint(), serialized = JSON.stringify(checkpoint);
+		const binding = owner(), checkpoint = workflow.exportCheckpoint(), serialized = JSON.stringify(checkpoint);
 		if (queuedSave?.binding === binding && queuedSave.serialized === serialized) return queuedSave.task;
 		if (!queuedSave && serialized === lastSaved) return;
 		const task = saveTail.then(async () => {
-			if (promptBinding !== binding || serialized === lastSaved) return;
+			if (owner() !== binding || serialized === lastSaved) return;
 			const revision = binding.revision;
-			const saved = await projectViews!.savePrompt(binding.projectId, binding.promptId, checkpoint, revision);
-			if (promptBinding === binding && binding.revision === revision) {
+			const saved = binding.projectId === SCRATCH_SCOPE
+				? await pads.save(binding.promptId, revision || null, checkpoint)
+				: await projectViews!.savePrompt(binding.projectId, binding.promptId, checkpoint, revision);
+			if (owner() === binding && binding.revision === revision) {
 				binding.revision = saved.revision;
 				lastSaved = serialized;
+				if (binding.projectId === SCRATCH_SCOPE) {
+					if (!revision) await context.workspaceState.update(LAST_SCRATCH_KEY, binding.promptId);
+					listings.fire();
+				}
 			}
 		});
 		saveTail = task.catch(() => undefined);
@@ -81,11 +107,11 @@ export function activateReview(context: vscode.ExtensionContext, services: Revie
 	};
 	const serializedDraft = () => JSON.stringify(workflow.exportCheckpoint());
 	const flushPrompt = async () => {
-		const binding = promptBinding;
+		const binding = owner();
 		clearTimeout(saveTimer);
 		saveTimer = undefined;
 		await saveTail;
-		while (binding && promptBinding === binding && serializedDraft() !== lastSaved) await saveNow();
+		while (owner() === binding && serializedDraft() !== lastSaved) await saveNow();
 	};
 	const flushForListing = async (): Promise<string | undefined> => {
 		try { await flushPrompt(); return undefined; }
@@ -95,25 +121,36 @@ export function activateReview(context: vscode.ExtensionContext, services: Revie
 		}
 	};
 	const saveAgentReadyCopy = async (text: string, version: number): Promise<boolean> => {
-		const binding = promptBinding;
-		if (!binding || !projectViews) return false;
+		const binding = owner();
 		const checkpoint = workflow.exportCheckpoint();
 		const task = saveTail.then(async () => {
-			if (promptBinding !== binding || workflow.snapshot.version !== version) throw new Error('The draft changed. Review it before copying again.');
-			const saved = await projectViews.savePrompt(binding.projectId, binding.promptId, checkpoint, binding.revision, text);
+			if (owner() !== binding || workflow.snapshot.version !== version) throw new Error('The draft changed. Review it before copying again.');
+			const saved = binding.projectId === SCRATCH_SCOPE
+				? await pads.save(binding.promptId, binding.revision || null, checkpoint, text)
+				: await projectViews!.savePrompt(binding.projectId, binding.promptId, checkpoint, binding.revision, text);
 			binding.revision = saved.revision;
-			if (promptBinding === binding) lastSaved = JSON.stringify(checkpoint);
+			if (owner() === binding) {
+				lastSaved = JSON.stringify(checkpoint);
+				if (binding.projectId === SCRATCH_SCOPE) listings.fire();
+			}
 		});
 		saveTail = task.catch(() => undefined);
 		await task;
 		return true;
 	};
 	const flushOrResolveConflict = async (): Promise<'ready' | 'stay' | 'scratch'> => {
-		const original = promptBinding;
+		const original = owner();
 		try { await flushPrompt(); return 'ready'; } catch (error) {
-			const choice = await vscode.window.showErrorMessage(`Could not save this prompt: ${error instanceof Error ? error.message : String(error)}. Your current text is still available.`, 'Keep Editing', 'Copy to Scratch', 'Save as New Project Prompt');
-			if (promptBinding !== original || choice === 'Keep Editing' || !choice) return 'stay';
-			if (choice === 'Copy to Scratch') { workflow.cancel(); lastSaved = ''; await persistBinding(); return 'scratch'; }
+			const choice = await vscode.window.showErrorMessage(`Could not save this prompt: ${error instanceof Error ? error.message : String(error)}. Your current text is still available.`, 'Keep Editing', 'Copy to Scratch', ...(promptBinding ? ['Save as New Project Prompt'] : []));
+			if (owner() !== original || choice === 'Keep Editing' || !choice) return 'stay';
+			if (choice === 'Copy to Scratch') {
+				workflow.cancel();
+				scratch = newPad();
+				lastSaved = '';
+				await persistBinding();
+				await flushPrompt();
+				return 'scratch';
+			}
 			if (choice === 'Save as New Project Prompt' && promptBinding && projectViews) {
 				const title = await vscode.window.showInputBox({prompt: 'Title for the new project prompt'});
 				if (!title?.trim() || promptBinding !== original) return 'stay';
@@ -131,26 +168,27 @@ export function activateReview(context: vscode.ExtensionContext, services: Revie
 	};
 	const persistBinding = async (binding?: PromptBinding) => {
 		promptBinding = binding;
+		editor.setDraftSession(sessionKey());
 		const value: PersistedBinding | undefined = binding && {projectId: binding.projectId, promptId: binding.promptId};
 		await context.workspaceState.update(BINDING_KEY, value);
 	};
 	// Change the workflow, its save baseline, and its owner before yielding to another webview request.
-	function replaceBoundDraft(binding?: PromptBinding, checkpoint: unknown = null) {
+	function replaceBoundDraft(binding?: PromptBinding, checkpoint: unknown = null, pad?: PromptBinding) {
 		hydrating = true;
 		try {
 			if (!workflow.restoreCheckpoint(checkpoint)) throw new Error('Saved prompt is invalid; the current review was kept.');
-			lastSaved = binding ? JSON.stringify(workflow.exportCheckpoint()) : '';
+			if (!binding) scratch = pad ?? newPad();
+			lastSaved = JSON.stringify(workflow.exportCheckpoint());
 			return persistBinding(binding);
 		} finally { hydrating = false; }
 	}
-	// Scratch has no durable owner. An edit made while a picker or storage read was open
-	// keeps Scratch on screen. Project drafts can instead flush the final edit before switching.
+	// A late edit in Scratch cancels navigation so the user can finish typing.
 	function startSwitch() {
 		return {generation: ++actionGeneration, scratch: promptBinding ? undefined : serializedDraft()};
 	}
-	async function switchDraft(request: ReturnType<typeof startSwitch>, next?: PromptBinding, checkpoint: unknown = null) {
+	async function switchDraft(request: ReturnType<typeof startSwitch>, next?: PromptBinding, checkpoint: unknown = null, pad?: PromptBinding) {
 		if (request.generation !== actionGeneration) return false;
-		if (promptBinding && await flushOrResolveConflict() !== 'ready') return false;
+		if (await flushOrResolveConflict() !== 'ready') return false;
 		if (request.generation !== actionGeneration) return false;
 		if (next && promptBinding?.projectId === next.projectId && promptBinding.promptId === next.promptId &&
 			promptBinding.revision > next.revision) return false;
@@ -158,7 +196,7 @@ export function activateReview(context: vscode.ExtensionContext, services: Revie
 			void vscode.window.showInformationMessage('Your draft changed during the switch. It is still open.');
 			return false;
 		}
-		await replaceBoundDraft(next, checkpoint);
+		await replaceBoundDraft(next, checkpoint, pad);
 		return request.generation === actionGeneration;
 	}
 	async function beforeSelectProject(projectId: string): Promise<boolean> {
@@ -184,17 +222,25 @@ export function activateReview(context: vscode.ExtensionContext, services: Revie
 		async update(key, value) { await configuration().update(key, value, vscode.ConfigurationTarget.Global); },
 		openSettings: async () => { await vscode.commands.executeCommand('setContext', 'dwiNov.settingsTree', true); await vscode.commands.executeCommand('dwiNov.settings.focus'); },
 		openProjectContext,
-		onDidChangeListings: projectViews?.onDidChangeListings,
+		onDidChangeListings: listings.event,
 		async homeState() {
 			const saveWarning = await flushForListing();
-			const state = await projectViews?.homeState() ?? {canStartProjectPrompt: false, hasRecentPrompts: false};
+			const state: HomeState = await projectViews?.homeState() ?? {canStartProjectPrompt: false, hasRecentPrompts: false};
+			const [latest] = await pads.list();
+			if (latest) {
+				state.hasRecentPrompts = true;
+				if (!state.lastPrompt || latest.updatedAt > state.lastPrompt.updatedAt) state.lastPrompt = {...latest, project: 'Scratch'};
+			}
 			return {...state, saveWarning};
 		},
 		async homeAction(action, lastPrompt) {
 			if (action === 'recents') { await openPage('recents'); return; }
-			if (action === 'scratch') {
-				if (promptBinding) await vscode.commands.executeCommand('dwiNov.scratch');
-				else await openPage('draft');
+			if (action === 'scratch' || action === 'new-scratch') {
+				await vscode.commands.executeCommand(action === 'scratch' ? 'dwiNov.scratch' : 'dwiNov.newScratch');
+				return;
+			}
+			if (action === 'last' && lastPrompt?.projectId === SCRATCH_SCOPE) {
+				await openScratch(lastPrompt.promptId);
 				return;
 			}
 			if (!projectViews) return;
@@ -219,9 +265,30 @@ export function activateReview(context: vscode.ExtensionContext, services: Revie
 		},
 		async recentPrompts() {
 			const saveWarning = await flushForListing();
-			return {rows: await projectViews?.workingPrompts() ?? [], saveWarning};
+			const [projects, scratchRows] = await Promise.all([projectViews?.workingPrompts() ?? [], pads.list()]);
+			return {rows: [...projects, ...scratchRows].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.promptId.localeCompare(b.promptId)), saveWarning};
 		},
 		async recentAction(action, prompt) {
+			if (prompt.projectId === SCRATCH_SCOPE) {
+				if (action === 'continue') { await openScratch(prompt.promptId); return; }
+				await flushPrompt();
+				const record = await pads.read(prompt.promptId);
+				if (!record || record.summary.archivedAt || record.summary.completed) throw new Error('This pad is no longer in Recents.');
+				if (action === 'summarise') return summarisePrompt(record.summary.title, record.value);
+				const binding = owner();
+				const active = binding.projectId === SCRATCH_SCOPE && binding.promptId === prompt.promptId;
+				const checkpoint = serializedDraft();
+				if (active && (checkpoint !== lastSaved || binding.revision !== record.revision)) throw new Error('The Scratch pad changed. Review it before archiving.');
+				await pads.archive(prompt.promptId, record.revision);
+				if (active && owner() === binding) {
+					++actionGeneration;
+					const laterEdits = serializedDraft() !== checkpoint ? workflow.exportCheckpoint() : null;
+					await replaceBoundDraft(undefined, laterEdits);
+					if (laterEdits) { lastSaved = ''; await flushPrompt(); }
+				}
+				listings.fire();
+				return;
+			}
 			if (!projectViews) return;
 			if (action === 'archive') { await archivePrompt(prompt, true); return; }
 			if (action === 'continue') {
@@ -242,7 +309,27 @@ export function activateReview(context: vscode.ExtensionContext, services: Revie
 		},
 		saveAgentReadyCopy,
 	});
+	editor.setDraftSession(sessionKey());
 	if (projectViews) editor.showPage('home');
+
+	async function openScratch(id?: string) {
+		const request = startSwitch();
+		const target = id ?? context.workspaceState.get<string>(LAST_SCRATCH_KEY);
+		if (!promptBinding && (target === scratch.promptId || !id && (!target || scratch.revision > 0 || serializedDraft() !== lastSaved))) {
+			await openPage('draft', undefined, !!id);
+			return;
+		}
+		const record = target ? await pads.read(target) : undefined;
+		if (id && (!record || record.summary.archivedAt || record.summary.completed)) throw new Error('This pad is no longer in Recents.');
+		const available = record && !record.summary.archivedAt && isPromptValue(record.value) ? record : undefined;
+		const pad = target && available ? {projectId: SCRATCH_SCOPE, promptId: target, revision: available.revision} : newPad();
+		const checkpoint = available && isPromptValue(available.value) ? available.value.checkpoint : null;
+		if (await switchDraft(request, undefined, checkpoint, pad)) {
+			await context.workspaceState.update(LAST_SCRATCH_KEY, pad.promptId);
+			if (request.generation === actionGeneration) await openPage('draft', undefined, !!id);
+		}
+	}
+
 	const openBoundPrompt = async (projectId: string, promptId: string, request: ReturnType<typeof startSwitch>, recentRevision?: number) => {
 		const expectedGeneration = request.generation;
 		if (!projectViews || expectedGeneration !== actionGeneration || !await projectViews.verifyOwningProject(projectId) || expectedGeneration !== actionGeneration) return;
@@ -281,8 +368,10 @@ export function activateReview(context: vscode.ExtensionContext, services: Revie
 			++actionGeneration;
 			if (serializedDraft() !== archivedCheckpoint) {
 				// The archive already committed. Keep edits accepted during its write in Scratch.
+				scratch = newPad();
 				lastSaved = '';
 				await persistBinding();
+				await flushPrompt();
 				await openPage('draft');
 				void vscode.window.showInformationMessage('The prompt was archived. Your later edits are open in Scratch.');
 			} else {
@@ -298,7 +387,7 @@ export function activateReview(context: vscode.ExtensionContext, services: Revie
 		return {projectId, promptId: record.key.promptId, revision: record.revision};
 	};
 	const reconcile = async () => { if (projectViews) await projectViews.refresh(); };
-	const subscriptions: vscode.Disposable[] = [editor,
+	const subscriptions: vscode.Disposable[] = [editor, listings, ...(projectChanges ? [projectChanges] : []),
 		{dispose: () => { clearTimeout(saveTimer); workflowSubscription(); workflow.cancel(); }},
 		vscode.workspace.onDidChangeConfiguration(event => { if (event.affectsConfiguration('dwiNov')) { prefs = readPanelSettings(configuration()); editor.refreshSettings(); } }),
 		vscode.window.registerWebviewViewProvider('dwiNov.home', editor, {webviewOptions: {retainContextWhenHidden: true}}),
@@ -308,18 +397,14 @@ export function activateReview(context: vscode.ExtensionContext, services: Revie
 		}),
 		vscode.commands.registerCommand('dwiNov.settingPage', async (node: unknown) => { const section = settingsSections.find(item => item.name === node); if (section) await openPage(section.page); }),
 		vscode.commands.registerCommand('dwiNov.returnToDraft', async () => { ++actionGeneration; await safe('Could not return to draft', async () => { await openPage('draft'); }); }),
-		vscode.commands.registerCommand('dwiNov.scratch', async () => {
-			const request = startSwitch();
-			const {generation} = request;
-			await safe('Could not switch to Scratch', async () => {
-				if (promptBinding) {
-					const result = await flushOrResolveConflict();
-					if (result === 'stay' || generation !== actionGeneration) return;
-					if (result === 'ready' && !await switchDraft(request)) return;
-				}
-				await openPage('draft');
-			});
-		}),
+		vscode.commands.registerCommand('dwiNov.scratch', () => safe('Could not open Scratch', () => openScratch())),
+		vscode.commands.registerCommand('dwiNov.newScratch', () => safe('Could not start a new Scratch pad', async () => {
+			const request = startSwitch(), pad = newPad();
+			if (await switchDraft(request, undefined, null, pad)) {
+				await context.workspaceState.update(LAST_SCRATCH_KEY, pad.promptId);
+				if (request.generation === actionGeneration) await openPage('draft');
+			}
+		})),
 		vscode.commands.registerCommand('dwiNov.contextSources', () => openContextSources(workflow)),
 		vscode.commands.registerCommand('dwiNov.searchSettings', async () => { const selection = await vscode.window.showQuickPick(searchableSettings, {placeHolder: 'Filter settings by key or path', matchOnDescription: true}); if (selection) await openPage(selection.page, selection.key); }),
 		vscode.commands.registerCommand('dwiNov.open', async () => { ++actionGeneration; await safe('Could not open Dwi Nov', async () => { await openPage('draft'); }); }),
