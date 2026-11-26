@@ -1,0 +1,15 @@
+.git/**
+.gitignore
+.gitattributes
+.vscodeignore
+src/**
+model/**
+demo/**
+scripts/**
+pnpm-lock.yaml
+pnpm-workspace.yaml
+.npmrc
+tsconfig.json
+vendor/*.tgz
+out/**/*.map
+*.vsix

@@ -1,0 +1,19 @@
+<h2 id="heading">Prompt preview</h2>
+<form id="clarify" hidden>
+<label for="answer" id="question"></label>
+<blockquote id="question-quote" hidden></blockquote>
+<textarea id="answer" rows="3"></textarea>
+<button class="primary" id="answer-next" disabled>Next</button>
+</form>
+<p id="message" role="status"></p>
+<div class="comparison" id="final-view" hidden>
+<section aria-labelledby="wording-title"><h2 id="wording-title" hidden>Prompt</h2><p id="original"></p></section>
+<section aria-labelledby="mapping-title"><details id="review-details"><summary id="mapping-title">Review details</summary>
+<div id="answered"></div>
+<div id="summary"></div>
+<details id="details" hidden><summary>Show mapping details</summary>
+<form id="fields" aria-label="Full mapping"></form>
+<details id="graph" hidden><summary>Parsed relationships and evidence</summary><pre id="graph-data"></pre></details>
+<div class="actions"><span id="state" role="status"></span><button id="discard" hidden>Discard changes</button><button class="primary" id="save" disabled>Save mapping</button></div>
+</details></details></section>
+</div>

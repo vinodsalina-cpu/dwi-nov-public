@@ -1,0 +1,62 @@
+.workbench:has(> .recents-page:not([hidden])) { margin-block-start: 0; }
+.recents-page {
+	--recents-gutter: clamp(8px, 3vw, 14px);
+	--recents-border: var(--vscode-sideBar-border, var(--vscode-contrastBorder, color-mix(in srgb, var(--ink) 16%, var(--page))));
+	display: grid;
+	grid-template-rows: 48px minmax(0, 1fr) 44px;
+	block-size: 100dvh;
+}
+.recents-page > header { display: flex; align-items: center; gap: 6px; padding-inline: var(--recents-gutter); border-block-end: 1px solid var(--recents-border); }
+.recents-page h2 { font-size: 17px; }
+.recents-page :is(.recents-title, .recents-more, #recents-back, #recents-all, #recents-pagination button, #recents-menu button) {
+	border-color: transparent; border-radius: 4px;
+}
+#recents-back, #recents-pagination button, .recents-more { inline-size: 28px; block-size: 28px; padding: 0; }
+#recents-list-space { --recents-row-height: 42px; padding: 8px var(--recents-gutter); min-block-size: 0; overflow: auto; }
+#recents-list { list-style: none; padding: 0; }
+.recents-row {
+	display: grid; grid-template-columns: minmax(0, 1fr) 18px 28px; gap: 4px; align-items: center;
+	block-size: var(--recents-row-height); border-block-end: 1px solid var(--recents-border);
+}
+.recents-row:last-child { border-block-end: 0; }
+.recents-title { justify-content: start; text-align: start; padding: 4px 6px; block-size: 32px; }
+.recents-title span { min-inline-size: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.recents-clock { display: grid; place-items: center; color: var(--muted); }
+.recents-clock > span { position: relative; inline-size: 12px; block-size: 12px; border: 1px solid currentColor; border-radius: 50%; }
+.recents-clock > span::before {
+	content: ""; position: absolute; inset: 2px auto auto 4px; inline-size: 3px; block-size: 4px;
+	border-inline-start: 1px solid currentColor; border-block-end: 1px solid currentColor;
+}
+.recents-clock[data-day="0"] { color: var(--vscode-charts-blue, #4e91c4); }
+.recents-clock[data-day="1"] { color: var(--vscode-charts-green, #4a9c77); }
+.recents-clock[data-day="2"] { color: var(--vscode-charts-purple, #a27fc8); }
+.recents-clock[data-day="3"] { color: var(--vscode-charts-orange, #d18a45); }
+.recents-clock[data-day="4"] { color: var(--vscode-charts-red, #d56b7f); }
+.recents-clock[data-day="5"] { color: var(--vscode-charts-yellow, #b49c48); }
+.recents-clock[data-day="6"] { color: var(--vscode-terminal-ansiCyan, #408e91); }
+.recents-more { color: var(--muted); font-size: 17px; }
+.recents-more[aria-expanded="true"] { background: var(--hover); }
+.recents-page > footer { justify-content: flex-end; padding-inline: var(--recents-gutter); border-block-start: 1px solid transparent; }
+.recents-page > footer:has(> :not([hidden])) { border-block-start-color: var(--recents-border); }
+#recents-pagination { display: flex; align-items: center; gap: 4px; inline-size: 100%; font-variant-numeric: tabular-nums; }
+#recents-range { margin-inline-end: auto; color: var(--muted); }
+#recents-status { color: var(--muted); padding-inline: 6px; overflow-wrap: anywhere; }
+#recents-menu {
+	position: fixed; inset: auto; margin: 0; padding: 4px; inline-size: min(148px, calc(100vw - var(--rail-width) - 8px));
+	border: 1px solid var(--vscode-menu-border, var(--recents-border)); border-radius: 4px;
+	background: var(--vscode-menu-background, var(--panel)); color: var(--vscode-menu-foreground, var(--ink));
+	box-shadow: 0 5px 14px var(--vscode-widget-shadow, transparent);
+}
+#recents-menu button { display: flex; justify-content: start; inline-size: 100%; text-align: start; padding: 7px 8px; }
+#recents-menu button:is(:hover, :focus) { background: var(--vscode-menu-selectionBackground, var(--hover)); color: var(--vscode-menu-selectionForeground, var(--ink)); }
+#recents-summary {
+	inline-size: min(440px, calc(100vw - 2 * var(--recents-gutter)));
+	max-block-size: calc(100dvh - 2 * var(--recents-gutter)); overflow: auto; padding: 14px;
+	border: 1px solid var(--recents-border); border-radius: 4px; background: var(--panel); color: var(--ink);
+}
+#recents-summary::backdrop { background: rgb(0 0 0 / .35); }
+#recents-summary dt { margin-block-start: 10px; font-weight: 600; }
+#recents-summary dd { white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); }
+#recents-summary form { display: flex; justify-content: end; margin-block-start: 12px; }
+#copy-ready-prompt { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+#copy-ready-status { color: var(--muted); }

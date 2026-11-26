@@ -1,0 +1,260 @@
+{
+  "name": "dwi-nov",
+  "displayName": "Dwi Nov",
+  "description": "A lightweight workspace view for VS Code.",
+  "version": "0.1.0",
+  "publisher": "dwi-nov",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.109.0",
+    "node": ">=22.13.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./out/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "dwiNov",
+          "title": "Dwi Nov",
+          "icon": "$(window)"
+        }
+      ]
+    },
+    "views": {
+      "dwiNov": [
+        {
+          "id": "dwiNov.home",
+          "name": "Dwi Nov",
+          "type": "webview",
+          "when": "!dwiNov.settingsTree && !dwiNov.projectContextOpen && !dwiNov.projectPromptsOpen"
+        },
+        {
+          "id": "dwiNov.settings",
+          "name": "Settings",
+          "when": "dwiNov.settingsTree && !dwiNov.projectContextOpen && !dwiNov.projectPromptsOpen"
+        },
+        {
+          "id": "dwi.projectContext",
+          "name": "Project Context",
+          "type": "webview",
+          "when": "dwiNov.projectContextOpen"
+        },
+        {
+          "id": "dwi.projectPrompts",
+          "name": "Project Prompts",
+          "when": "dwiNov.projectPromptsOpen"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "dwiNov.openHome",
+        "title": "Dwi Nov: Home",
+        "icon": "$(home)"
+      },
+      {
+        "command": "dwiNov.open",
+        "title": "Dwi Nov: Open"
+      },
+      {
+        "command": "dwiNov.contextSources",
+        "title": "Context Sources",
+        "category": "Dwi Nov"
+      },
+      {
+        "command": "dwiNov.returnToDraft",
+        "title": "Return to draft",
+        "icon": "$(arrow-left)"
+      },
+      {
+        "command": "dwiNov.scratch",
+        "title": "Switch to Scratch prompt"
+      },
+      {
+        "command": "dwiNov.searchSettings",
+        "title": "Search settings",
+        "icon": "$(search)"
+      },
+      {
+        "command": "dwi.projectContext.initialize",
+        "title": "Dwi Nov: Initialize Project"
+      },
+      {
+        "command": "dwi.projectContext.select",
+        "title": "Dwi Nov: Open Project"
+      },
+      {
+        "command": "dwi.projectContext.openPrompts",
+        "title": "Dwi Nov: Project Prompts"
+      },
+      {
+        "command": "dwi.projectContext.new",
+        "title": "Dwi Nov: New Project Prompt"
+      },
+      {
+        "command": "dwi.projectContext.open",
+        "title": "Dwi Nov: Open Recent Prompt"
+      },
+      {
+        "command": "dwi.projectContext.complete",
+        "title": "Dwi Nov: Complete Prompt"
+      },
+      {
+        "command": "dwiNov.openRecents",
+        "title": "Dwi Nov: Recents"
+      },
+      {
+        "command": "dwi.projectContext.copyFinal",
+        "title": "Copy Agent-Ready Prompt"
+      },
+      {
+        "command": "dwi.projectContext.archive",
+        "title": "Dwi Nov: Archive Prompt"
+      },
+      {
+        "command": "dwi.projectContext.restore",
+        "title": "Dwi Nov: Restore Prompt"
+      },
+      {
+        "command": "dwi.projectContext.reviewContext",
+        "title": "Dwi Nov: Review Project Context Excerpts"
+      },
+      {
+        "command": "dwi.projectContext.hideRecent",
+        "title": "Dwi Nov: Hide Recent Prompt"
+      },
+      {
+        "command": "dwi.projectContext.attachApprovedSources",
+        "title": "Dwi Nov: Attach Approved Sources"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "dwiNov.openHome",
+          "when": "view == dwi.projectPrompts || view == dwiNov.settings",
+          "group": "navigation@0"
+        },
+        {
+          "command": "dwiNov.contextSources",
+          "when": "view == dwiNov.home",
+          "group": "context"
+        },
+        {
+          "command": "dwiNov.returnToDraft",
+          "when": "view == dwiNov.settings",
+          "group": "navigation@1"
+        },
+        {
+          "command": "dwiNov.scratch",
+          "when": "view == dwiNov.home",
+          "group": "navigation@3"
+        },
+        {
+          "command": "dwiNov.searchSettings",
+          "when": "view == dwiNov.settings",
+          "group": "navigation@2"
+        },
+        {
+          "command": "dwi.projectContext.attachApprovedSources",
+          "when": "view == dwiNov.home && dwi.projectContext.hasBoundPrompt",
+          "group": "context"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "dwi.projectContext.complete",
+          "when": "view == dwi.projectPrompts && viewItem == projectContext.prompt",
+          "group": "inline"
+        },
+        {
+          "command": "dwi.projectContext.copyFinal",
+          "when": "view == dwi.projectPrompts && (viewItem == projectContext.completedPrompt || viewItem == projectContext.archivedWithCopy)",
+          "group": "1_copy"
+        },
+        {
+          "command": "dwi.projectContext.archive",
+          "when": "view == dwi.projectPrompts && (viewItem == projectContext.prompt || viewItem == projectContext.completedPrompt || viewItem == projectContext.completedWithoutCopy)",
+          "group": "inline"
+        },
+        {
+          "command": "dwi.projectContext.restore",
+          "when": "view == dwi.projectPrompts && (viewItem == projectContext.archivedPrompt || viewItem == projectContext.archivedWithCopy)",
+          "group": "inline"
+        },
+        {
+          "command": "dwi.projectContext.hideRecent",
+          "when": "view == dwi.projectPrompts && (viewItem == projectContext.prompt || viewItem == projectContext.completedPrompt || viewItem == projectContext.completedWithoutCopy)",
+          "group": "3_hide"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "dwiNov.returnToDraft",
+          "when": "dwiNov.settingsTree"
+        },
+        {
+          "command": "dwiNov.scratch"
+        },
+        {
+          "command": "dwiNov.searchSettings",
+          "when": "dwiNov.settingsTree"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Dwi Nov",
+      "properties": {
+        "dwiNov.logging.enabled": {
+          "type": "boolean",
+          "default": false,
+          "scope": "application",
+          "description": "Record selected review sources in the local compressed log archive."
+        },
+        "dwiNov.logging.source": {
+          "type": "string",
+          "enum": [
+            "none",
+            "markov"
+          ],
+          "default": "markov",
+          "scope": "application",
+          "description": "Source to record and explore when review logging is enabled."
+        },
+        "dwiNov.editor.fontSize": {
+          "type": "integer",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 72,
+          "scope": "application",
+          "description": "Review editor font size in pixels. Use 0 to follow VS Code."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "preinstall": "node scripts/check-package-manager.cjs",
+    "compile": "tsc -p ./",
+    "package": "pnpm run compile && node scripts/bundle-onnx.cjs && node scripts/package.cjs"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3",
+    "@types/node": "22.20.3",
+    "@types/vscode": "1.109.0",
+    "@vscode/vsce": "4.1.1",
+    "onnxruntime-node": "1.24.3",
+    "tokenizers": "0.23.2"
+  },
+  "dependencies": {
+    "diff": "8.0.4",
+    "harper.js": "3.3.0",
+    "pino": "10.4.0"
+  },
+  "packageManager": "pnpm@12.23.0"
+}
