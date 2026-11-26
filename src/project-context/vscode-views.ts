@@ -694,7 +694,9 @@ export class ProjectContextViews implements vscode.TreeDataProvider<Node>, vscod
 		const approved = value?.approvedContext;
 		const root = entry.root;
 		if (!root || !approved?.sources.length || await this.checkoutFingerprint(root) !== approved.basisFingerprint) return unknown;
-		const words = wording.toLowerCase().match(/[a-z][\w./-]{3,}/gu) ?? [];
+		// Preserve separators inside file paths and symbols, and drop sentence punctuation.
+		const wordsIn = (text: string) => text.toLowerCase().match(/[a-z][\w./-]{2,}\w/gu) ?? [];
+		const words = wordsIn(wording);
 		const common = new Set(['please', 'would', 'should', 'could', 'after', 'before', 'change', 'there', 'which', 'when',
 			'that', 'this', 'thing', 'update', 'have', 'with', 'from', 'your', 'make', 'what', 'file', 'using', 'component', 'specific']);
 		const terms = [...new Set(words.filter(word => !common.has(word)))].slice(0, 24);
@@ -708,7 +710,7 @@ export class ProjectContextViews implements vscode.TreeDataProvider<Node>, vscod
 			const path = source.reference.toLowerCase();
 			const lines = source.excerpt.split(/\r?\n/u);
 			const line = lines.findIndex(value => {
-				const tokens = new Set(value.toLowerCase().match(/[a-z][\w./-]{3,}/gu) ?? []);
+				const tokens = new Set(wordsIn(value));
 				return terms.some(term => tokens.has(term));
 			});
 			if (line < 0 && !terms.some(term => path.split(/[/._-]/u).includes(term) || term === path)) continue;
